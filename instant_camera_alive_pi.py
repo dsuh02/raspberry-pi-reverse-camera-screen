@@ -21,10 +21,6 @@ Usage:
 New machine-readable modes for watchdogs:
   python3 instant_camera_alive_pi.py --device /dev/video0 --once-json
   python3 instant_camera_alive_pi.py --device /dev/video0 --once-kv
-
-Tips:
-  - Find device: v4l2-ctl --list-devices ; ls /dev/video*
-  - Preview: ffplay /dev/video0
 """
 
 import argparse
@@ -84,24 +80,19 @@ class AliveDetector:
         self.last_alive_evidence_fast: bool = False
 
     def update(self, gray: np.ndarray, now: float) -> str:
-        """Update detector with a new grayscale frame. Returns current status."""
         self.last_frame_time = now
 
-        # Downsample for speed
         small = gray[:: self.downsample, :: self.downsample]
 
-        # Stats
         self.mean = float(small.mean())
         self.std = float(small.std())
         self.black = is_black_frame(small, self.black_mean_thr, self.black_std_thr)
 
-        # Temporal diff
         self.diff = None
         if self.prev_small is not None and self.prev_small.shape == small.shape:
             self.diff = float(np.mean(np.abs(small.astype(np.int16) - self.prev_small.astype(np.int16))))
         self.prev_small = small
 
-        # Fast-rise evidence
         alive_evidence_fast = (not self.black) or (self.diff is not None and self.diff >= self.diff_thresh)
         self.last_alive_evidence_fast = bool(alive_evidence_fast)
 
@@ -111,7 +102,6 @@ class AliveDetector:
         else:
             self.dead_conf += 1
 
-        # State machine
         if self.status == "DEAD":
             if alive_evidence_fast:
                 self.status = "ALIVE"
@@ -123,16 +113,13 @@ class AliveDetector:
         return self.status
 
     def update_stale(self, now: float) -> str:
-        """Call when we fail to read frames; enforces stale timeout."""
         if self.last_frame_time == 0.0:
-            # never received a frame => stay dead
             self.status = "DEAD"
             return self.status
 
         age_ms = (now - self.last_frame_time) * 1000.0
         if age_ms > self.stale_ms:
             self.status = "DEAD"
-            # reset evidence counters so we can rise instantly when frames return
             self.dead_conf = 0
             self.prev_small = None
             self.diff = None
@@ -160,12 +147,10 @@ def open_capture(device: str, width: Optional[int], height: Optional[int], fps: 
 
 
 def _fmt_float(v: Optional[float], fmt: str) -> str:
-    if v is None:
-        return "N/A"
-    return format(v, fmt)
+    return "N/A" if v is None else format(v, fmt)
 
 
-def _reason_from_metrics(status: str, black: bool, diff: Optional[float], diff_thresh: float, stale: bool) -> str:
+def _reason(status: str, black: bool, diff: Optional[float], diff_thresh: float, stale: bool) -> str:
     if stale:
         return "stale_timeout"
     if status == "ALIVE":
@@ -174,7 +159,6 @@ def _reason_from_metrics(status: str, black: bool, diff: Optional[float], diff_t
         if diff is not None and diff >= diff_thresh:
             return "diff_high"
         return "alive"
-    # DEAD
     if black and (diff is None or diff < diff_thresh):
         return "black_or_diff_low"
     return "dead"
@@ -182,33 +166,32 @@ def _reason_from_metrics(status: str, black: bool, diff: Optional[float], diff_t
 
 def main():
     ap = argparse.ArgumentParser(description="Instant camera alive detector (Raspberry Pi / Linux / V4L2)")
-    ap.add_argument("--device", default="/dev/video0", help="V4L2 device path, e.g. /dev/video0")
-    ap.add_argument("--width", type=int, default=640, help="Requested capture width (best-effort)")
-    ap.add_argument("--height", type=int, default=480, help="Requested capture height (best-effort)")
-    ap.add_argument("--fps", type=int, default=30, help="Requested FPS (best-effort)")
+    ap.add_argument("--device", default="/dev/video0")
+    ap.add_argument("--width", type=int, default=640)
+    ap.add_argument("--height", type=int, default=480)
+    ap.add_argument("--fps", type=int, default=30)
 
     ap.add_argument("--downsample", type=int, default=8)
     ap.add_argument("--diff_thresh", type=float, default=0.20)
 
-    ap.add_argument("--black_mean_thr", type=float, default=1.0, help="Mean threshold for 'black/off' frame")
-    ap.add_argument("--black_std_thr", type=float, default=0.2, help="Stddev threshold for 'black/off' frame")
+    ap.add_argument("--black_mean_thr", type=float, default=1.0)
+    ap.add_argument("--black_std_thr", type=float, default=0.2)
 
-    ap.add_argument("--stale_ms", type=int, default=250, help="No frames for this long => DEAD")
-    ap.add_argument("--dead_off_n", type=int, default=3, help="Consecutive dead evidences to switch ALIVE->DEAD")
-    ap.add_argument("--hold_alive_s", type=float, default=0.0, help="Hold ALIVE at least this long since last alive evidence")
+    ap.add_argument("--stale_ms", type=int, default=250)
+    ap.add_argument("--dead_off_n", type=int, default=3)
+    ap.add_argument("--hold_alive_s", type=float, default=0.0)
 
-    ap.add_argument("--dashboard", action="store_true", help="Live updating single-line dashboard")
-    ap.add_argument("--interval", type=float, default=0.02, help="UI update interval seconds (0 = as fast as possible)")
-    ap.add_argument("--show", action="store_true", help="Show preview window (requires desktop); ESC to exit")
+    ap.add_argument("--dashboard", action="store_true")
+    ap.add_argument("--interval", type=float, default=0.02)
+    ap.add_argument("--show", action="store_true")
 
-    # New outputs for watchdogs / logging
+    # machine-readable + debug
     ap.add_argument("--once-json", action="store_true", help="Print one JSON status line and exit")
     ap.add_argument("--once-kv", action="store_true", help="Print one KEY=VALUE status line and exit")
-    ap.add_argument("--debug", action="store_true", help="Emit newline debug logs (useful under systemd)")
-    ap.add_argument("--log-every", type=float, default=0.0, help="Emit a newline status line every N seconds (0 disables)")
+    ap.add_argument("--debug", action="store_true", help="Emit newline debug logs even with --dashboard")
+    ap.add_argument("--log-every", type=float, default=0.0, help="Emit a newline status line every N seconds")
 
     args = ap.parse_args()
-
     if args.once_json and args.once_kv:
         print("ERROR: choose only one of --once-json or --once-kv", file=sys.stderr)
         sys.exit(2)
@@ -216,7 +199,6 @@ def main():
     cap = open_capture(args.device, args.width, args.height, args.fps)
     if not cap.isOpened():
         print(f"ERROR: Could not open {args.device}", file=sys.stderr)
-        print("Tip: v4l2-ctl --list-devices ; ls /dev/video*", file=sys.stderr)
         sys.exit(1)
 
     det = AliveDetector(
@@ -229,7 +211,6 @@ def main():
         hold_alive_s=args.hold_alive_s,
     )
 
-    # FPS measurement (actual)
     last_frames = 0
     last_t = time.time()
     fps_meas = 0.0
@@ -238,12 +219,12 @@ def main():
     prev_status = None
     last_log_t = 0.0
 
-    def emit_line_newline(status: str, age_ms: Optional[float], stale: bool):
+    def emit_newline(status: str, age_ms: Optional[float], stale: bool):
+        age_txt = "N/A" if age_ms is None else f"{age_ms:0.0f}ms"
         mean_txt = _fmt_float(det.mean, "0.1f")
         std_txt = _fmt_float(det.std, "0.2f")
         diff_txt = _fmt_float(det.diff, "0.3f")
-        age_txt = "N/A" if age_ms is None else f"{age_ms:0.0f}ms"
-        reason = _reason_from_metrics(status, det.black, det.diff, args.diff_thresh, stale)
+        reason = _reason(status, det.black, det.diff, args.diff_thresh, stale)
         print(
             f"{time.strftime('%H:%M:%S')} STATUS={status} age={age_txt} fps={fps_meas:0.1f} frames={frames_total} "
             f"mean={mean_txt} std={std_txt} diff={diff_txt} black={det.black} deadN={det.dead_conf} reason={reason}",
@@ -251,7 +232,6 @@ def main():
         )
 
     def emit_once(status: str, age_ms: Optional[float], stale: bool):
-        reason = _reason_from_metrics(status, det.black, det.diff, args.diff_thresh, stale)
         payload = {
             "ts": time.time(),
             "device": args.device,
@@ -266,14 +246,13 @@ def main():
             "black": bool(det.black),
             "dead_conf": int(det.dead_conf),
             "alive_evidence_fast": bool(det.last_alive_evidence_fast),
-            "reason": reason,
+            "reason": _reason(status, det.black, det.diff, args.diff_thresh, stale),
             "stale": bool(stale),
         }
 
         if args.once_json:
             print(json.dumps(payload), flush=True)
-        elif args.once_kv:
-            # KEY=VALUE, single line
+        else:
             def kv(k, v):
                 if v is None:
                     return f"{k}=N/A"
@@ -282,25 +261,7 @@ def main():
                 if isinstance(v, float):
                     return f"{k}={v:.3f}"
                 return f"{k}={v}"
-
-            parts = [
-                kv("ts", payload["ts"]),
-                kv("device", payload["device"]),
-                kv("status", payload["status"]),
-                kv("alive", payload["alive"]),
-                kv("age_ms", payload["age_ms"]),
-                kv("fps_meas", payload["fps_meas"]),
-                kv("frames_total", payload["frames_total"]),
-                kv("mean", payload["mean"]),
-                kv("std", payload["std"]),
-                kv("diff", payload["diff"]),
-                kv("black", payload["black"]),
-                kv("dead_conf", payload["dead_conf"]),
-                kv("alive_evidence_fast", payload["alive_evidence_fast"]),
-                kv("reason", payload["reason"]),
-                kv("stale", payload["stale"]),
-            ]
-            print(" ".join(parts), flush=True)
+            print(" ".join(kv(k, payload[k]) for k in payload.keys()), flush=True)
 
     try:
         while True:
@@ -311,7 +272,6 @@ def main():
             if ok and frame is not None:
                 frames_total += 1
 
-                # Measure FPS over sliding-ish window
                 dt = now - last_t
                 if dt >= 0.25:
                     df = frames_total - last_frames
@@ -324,7 +284,7 @@ def main():
 
                 if args.show:
                     cv2.imshow("capture", frame)
-                    if (cv2.waitKey(1) & 0xFF) == 27:  # ESC
+                    if (cv2.waitKey(1) & 0xFF) == 27:
                         break
             else:
                 stale = True
@@ -332,23 +292,20 @@ def main():
 
             age_ms = det.age_ms(now)
 
-            # Machine-readable single-shot modes
             if args.once_json or args.once_kv:
                 emit_once(status, age_ms, stale)
                 return
 
-            # Periodic newline logs (useful under systemd)
-            if args.log_every and args.log_every > 0:
-                if (now - last_log_t) >= args.log_every:
-                    emit_line_newline(status, age_ms, stale)
-                    last_log_t = now
+            if args.log_every and args.log_every > 0 and (now - last_log_t) >= args.log_every:
+                emit_newline(status, age_ms, stale)
+                last_log_t = now
 
             if args.dashboard:
                 age_txt = "N/A" if age_ms is None else f"{age_ms:0.0f}ms"
                 mean_txt = _fmt_float(det.mean, "0.1f")
                 std_txt = _fmt_float(det.std, "0.2f")
                 diff_txt = _fmt_float(det.diff, "0.3f")
-                reason = _reason_from_metrics(status, det.black, det.diff, args.diff_thresh, stale)
+                reason = _reason(status, det.black, det.diff, args.diff_thresh, stale)
 
                 line = (
                     f"STATUS={status:<5} age={age_txt:<6} fps={fps_meas:0.1f} frames={frames_total:<8} "
@@ -358,16 +315,14 @@ def main():
                 sys.stdout.write("\r" + line + " " * 10)
                 sys.stdout.flush()
 
-                # Optional newline debug (so you can see decisions even with \r dashboard)
                 if args.debug and status != prev_status:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
-                    emit_line_newline(status, age_ms, stale)
+                    emit_newline(status, age_ms, stale)
                     prev_status = status
             else:
-                # event mode: print only on status changes
                 if status != prev_status:
-                    emit_line_newline(status, age_ms, stale)
+                    emit_newline(status, age_ms, stale)
                     prev_status = status
 
             if args.interval > 0:
