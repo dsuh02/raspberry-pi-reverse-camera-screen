@@ -56,7 +56,7 @@ class AliveDetector:
             self.diff = float(np.mean(np.abs(gray_small.astype(np.int16) - self.prev.astype(np.int16))))
         self.prev = gray_small
 
-        alive_evidence_fast = (not self.black) or (self.diff is not None and self.diff >= self.diff_thresh)
+        alive_evidence_fast = ((self.std is not None and self.std >= self.std_alive_thr) or (self.diff is not None and self.diff >= self.diff_thresh))
 
         if alive_evidence_fast:
             self.last_alive_evidence_t = now
@@ -105,7 +105,8 @@ class OverlayController:
             if self.hide_mode == "alpha" and self.alpha_prop:
                 self.kmssink.set_property(self.alpha_prop, 1.0)
             else:
-                self.kmssink.set_property("render-rectangle", self._rect_to_prop(self.show_rect))
+                x, y, w, h = self.show_rect
+                self.kmssink.set_property("render-rectangle", [x, y, w, h])
             self.visible = True
         else:
             # hide
@@ -115,14 +116,9 @@ class OverlayController:
                 # Move it offscreen; keep size to avoid renegotiation
                 x, y, w, h = self.show_rect
                 off = (2000, 2000, w, h)
-                self.kmssink.set_property("render-rectangle", self._rect_to_prop(off))
+                x, y, w, h = off
+                self.kmssink.set_property("render-rectangle", [x, y, w, h])
             self.visible = False
-
-    @staticmethod
-    def _rect_to_prop(rect):
-        x, y, w, h = rect
-        # kmssink accepts GstStructure-ish strings; this format works in practice:
-        return f"<(gint){x},(gint){y},(gint){w},(gint){h}>"
 
 def build_pipeline(args):
     # Branch A: display (NV12 800x480) -> kmssink
@@ -172,6 +168,7 @@ def main():
 
     # detection thresholds
     ap.add_argument("--diff-thresh", type=float, default=0.20)
+    ap.add_argument("--std-alive-thr", type=float, default=3.0, help="Stddev threshold to consider feed alive (filters flat no-signal screens)")
     ap.add_argument("--black-mean-thr", type=float, default=1.0)
     ap.add_argument("--black-std-thr", type=float, default=0.2)
     ap.add_argument("--dead-off-n", type=int, default=3)
@@ -210,6 +207,7 @@ def main():
         diff_thresh=args.diff_thresh,
         black_mean_thr=args.black_mean_thr,
         black_std_thr=args.black_std_thr,
+        std_alive_thr=args.std_alive_thr,
         dead_off_n=args.dead_off_n,
         hold_alive_s=args.hold_alive_s,
     )
